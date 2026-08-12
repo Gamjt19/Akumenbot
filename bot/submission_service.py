@@ -27,12 +27,14 @@ class SubmissionOutcome(Enum):
     NOT_A_SUBMISSION = auto()      # message didn't match "Day N" pattern
     RECORDED = auto()              # new valid submission, streak updated
     DUPLICATE_SAME_DAY = auto()    # student already has an official submission today
+    INVALID_DAY_NUMBER = auto()    # student typed day number != expected day number
 
 
 @dataclass(frozen=True)
 class SubmissionResult:
     outcome: SubmissionOutcome
     challenge_day: int | None = None
+    expected_day: int | None = None
     current_streak: int | None = None
     best_streak: int | None = None
     streak_broken: bool = False
@@ -50,6 +52,11 @@ def get_or_create_student(session: Session, discord_user_id: str, username: str)
         # Keep the display name reasonably fresh (Discord usernames can change).
         if student.username != username:
             student.username = username
+        # Ensure streak row exists even if it was manually deleted from database
+        streak = session.query(Streak).filter_by(student_id=student.id).one_or_none()
+        if streak is None:
+            session.add(Streak(student_id=student.id, current_streak=0, best_streak=0))
+            session.flush()
     return student
 
 
@@ -99,22 +106,41 @@ def process_message(
             .first()
         )
         if existing_duplicate is None:
-            duplicate = Submission(
-                student_id=student.id,
-                challenge_day=parsed.challenge_day,
-                submission_date=submission_date,
-                message_id=message_id,
-                message_content=message_content,
-                is_valid=False,
-            )
-            session.add(duplicate)
+            try:
+                duplicate = Submission(
+                    student_id=student.id,
+                    challenge_day=parsed.challenge_day,
+                    submission_date=submission_date,
+                    message_id=message_id,
+                    message_content=message_content,
+                    is_valid=False,
+                )
+                session.add(duplicate)
+                session.flush()
+            except Exception:
+                session.rollback()
         return SubmissionResult(outcome=SubmissionOutcome.DUPLICATE_SAME_DAY)
+
+    last_sub = (
+        session.query(Submission)
+        .filter_by(student_id=student.id, is_valid=True)
+        .order_by(Submission.id.desc())
+        .first()
+    )
+    expected_day = (last_sub.challenge_day + 1) if last_sub is not None else 1
+
+    if parsed.challenge_day != expected_day:
+        return SubmissionResult(
+            outcome=SubmissionOutcome.INVALID_DAY_NUMBER,
+            challenge_day=parsed.challenge_day,
+            expected_day=expected_day,
+        )
 
     streak_row = session.query(Streak).filter_by(student_id=student.id).one()
     prior_state = StreakState(
-        current_streak=streak_row.current_streak,
+        current_streak=streak_row.current_streak if last_sub is not None else 0,
         best_streak=streak_row.best_streak,
-        last_submission_date=streak_row.last_submission_date,
+        last_submission_date=last_sub.submission_date if last_sub is not None else None,
     )
 
     result = compute_next_streak(prior_state, submission_date)
