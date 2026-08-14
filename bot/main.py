@@ -26,7 +26,7 @@ logger = logging.getLogger("challenge_bot")
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members = False
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -37,14 +37,19 @@ async def on_ready():
 
     try:
         if config.guild_id:
-            guild = discord.Object(id=config.guild_id)
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            logger.info("Synced %d slash commands to guild %s", len(synced), config.guild_id)
+            try:
+                guild = discord.Object(id=config.guild_id)
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                logger.info("Synced %d slash commands to guild %s", len(synced), config.guild_id)
+            except Exception as e:
+                logger.warning("Could not sync to guild %s (%s). Falling back to global sync.", config.guild_id, e)
+                synced = await bot.tree.sync()
+                logger.info("Synced %d global slash commands", len(synced))
         else:
             synced = await bot.tree.sync()
-            logger.info("Synced %d global slash commands (may take up to 1hr to propagate)", len(synced))
-    except discord.DiscordException:
+            logger.info("Synced %d global slash commands", len(synced))
+    except Exception:
         logger.exception("Failed to sync slash commands")
 
     setup_daily_report_task(bot)
@@ -57,8 +62,15 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
+    logger.info("Message received from %s (channel_id=%s): %r", message.author, message.channel.id, message.content)
+
     # Only look at the configured submission channel, if one is set.
     if config.submission_channel_id is not None and message.channel.id != config.submission_channel_id:
+        logger.info(
+            "Ignored message: channel_id %s does not match SUBMISSION_CHANNEL_ID %s",
+            message.channel.id,
+            config.submission_channel_id,
+        )
         return
 
     try:
@@ -86,6 +98,12 @@ async def on_message(message: discord.Message):
             await message.reply(
                 "You've already logged a submission for today — this one was recorded "
                 "but won't count twice toward your streak."
+            )
+        elif result.outcome == SubmissionOutcome.INVALID_DAY_NUMBER:
+            await message.reply(
+                f"⚠️ **Invalid day number!**\n\n"
+                f"Expected **Day {result.expected_day}**, but you entered **Day {result.challenge_day}**.\n"
+                f"Please re-submit using `Day {result.expected_day}`."
             )
         # NOT_A_SUBMISSION: silently ignored on purpose (channel may have other
         # chatter). If stricter behavior is wanted, uncomment the else-branch below.
