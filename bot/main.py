@@ -26,7 +26,7 @@ logger = logging.getLogger("challenge_bot")
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members = False
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
