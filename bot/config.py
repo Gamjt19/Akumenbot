@@ -43,22 +43,29 @@ class Config:
     guild_id: int | None
     submission_channel_id: int | None
     admin_channel_id: int | None
+    trainer_channel_id: int | None
+    assignments_channel_id: int | None
+    achievements_channel_id: int | None
     trainer_role_name: str
     daily_report_hour: int
     daily_report_minute: int
 
     @classmethod
     def load(cls) -> "Config":
+        trainer_channel = _optional_int("TRAINER_CHANNEL_ID") or _optional_int("ADMIN_CHANNEL_ID")
         return cls(
             discord_token=_require("DISCORD_TOKEN"),
-            database_url=os.getenv("DATABASE_URL", "sqlite:///data/challenge.db"),
+            database_url=os.getenv("DB_URL") or os.getenv("DATABASE_URL", "sqlite:///data/challenge.db"),
             timezone=os.getenv("TIMEZONE", "Asia/Kolkata"),
             guild_id=_optional_int("GUILD_ID"),
             submission_channel_id=_optional_int("SUBMISSION_CHANNEL_ID"),
-            admin_channel_id=_optional_int("ADMIN_CHANNEL_ID"),
-            trainer_role_name=os.getenv("TRAINER_ROLE_NAME", "Trainer"),
-            daily_report_hour=int(os.getenv("DAILY_REPORT_HOUR", "21")),
-            daily_report_minute=int(os.getenv("DAILY_REPORT_MINUTE", "0")),
+            admin_channel_id=trainer_channel,
+            trainer_channel_id=trainer_channel,
+            assignments_channel_id=_optional_int("ASSIGNMENTS_CHANNEL_ID"),
+            achievements_channel_id=_optional_int("ACHIEVEMENTS_CHANNEL_ID"),
+            trainer_role_name=os.getenv("TRAINER_ROLE_NAME", "trainer"),
+            daily_report_hour=int(os.getenv("DAILY_REPORT_HOUR", "0")),
+            daily_report_minute=int(os.getenv("DAILY_REPORT_MINUTE", "5")),
         )
 
 

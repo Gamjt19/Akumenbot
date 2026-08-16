@@ -94,6 +94,29 @@ async def on_message(message: discord.Message):
                 f"Best streak: **{result.best_streak} days**"
                 f"{broken_note}"
             )
+
+            # Public announcement for newly unlocked achievements
+            if result.new_achievements:
+                try:
+                    ach_channel_id = config.achievements_channel_id or config.submission_channel_id
+                    if ach_channel_id:
+                        ach_channel = bot.get_channel(ach_channel_id)
+                        if ach_channel is None:
+                            try:
+                                ach_channel = await bot.fetch_channel(ach_channel_id)
+                            except Exception:
+                                ach_channel = None
+
+                        if ach_channel:
+                            for badge_name in result.new_achievements:
+                                await ach_channel.send(
+                                    f"🏆 **ACHIEVEMENT UNLOCKED!**\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"🎉 Congratulations <@{message.author.id}>! You earned the **{badge_name}** badge!\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━"
+                                )
+                except Exception:
+                    logger.exception("Failed to send achievement announcement")
         elif result.outcome == SubmissionOutcome.DUPLICATE_SAME_DAY:
             await message.reply(
                 "You've already logged a submission for today — this one was recorded "

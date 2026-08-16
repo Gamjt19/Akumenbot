@@ -34,11 +34,12 @@ class Student(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     discord_user_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     username: Mapped[str] = mapped_column(String(128), nullable=False)
-    joined_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
+    joined_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     submissions: Mapped[list["Submission"]] = relationship(back_populates="student")
     streak: Mapped["Streak"] = relationship(back_populates="student", uselist=False)
+    achievements: Mapped[list["Achievement"]] = relationship(back_populates="student")
 
 
 class Submission(Base):
@@ -57,7 +58,7 @@ class Submission(Base):
     submission_date: Mapped[dt.date] = mapped_column(Date, nullable=False, index=True)
     message_id: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     message_content: Mapped[str] = mapped_column(String(2000), nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
     # is_valid=True means "this counted toward the streak" (first valid post of the day).
     # Later duplicate posts on the same day are stored with is_valid=False so the
     # unique constraint above only ever guards the one official row per day.
@@ -85,3 +86,41 @@ class Settings(Base):
     admin_channel_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Kolkata", nullable=False)
     challenge_started_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+
+
+class Assignment(Base):
+    __tablename__ = "assignments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    author_discord_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    author_username: Mapped[str] = mapped_column(String(128), nullable=False)
+    topic: Mapped[str] = mapped_column(String(256), nullable=False)
+    details: Mapped[str] = mapped_column(String(2000), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
+    discord_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    channel_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class Achievement(Base):
+    __tablename__ = "achievements"
+    __table_args__ = (
+        UniqueConstraint("student_id", "badge_key", name="uq_student_badge"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), nullable=False, index=True)
+    badge_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    badge_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    earned_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
+
+    student: Mapped["Student"] = relationship(back_populates="achievements")
+
+
+class DailyReportHistory(Base):
+    __tablename__ = "daily_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_date: Mapped[dt.date] = mapped_column(Date, unique=True, nullable=False, index=True)
+    sent_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.timezone.utc), nullable=False)
+    channel_id: Mapped[str] = mapped_column(String(32), nullable=False)
+

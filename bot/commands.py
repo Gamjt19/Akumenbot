@@ -1,11 +1,11 @@
 """
 Slash commands.
 
-Student commands:  /ping, /progress, /leaderboard
+Student commands:  /assignment, /assignments, /mystats, /today, /leaderboard, /progress, /help, /ping
 Trainer/admin-only: /status, /missed, /reset, /export
 
 Permission model: trainer-only commands check for a configurable Discord
-role (TRAINER_ROLE_NAME env var, default "Trainer") OR server Administrator
+role (TRAINER_ROLE_NAME env var, default "trainer") OR server Administrator
 permission. No individual Discord user IDs are ever hardcoded.
 """
 
@@ -23,19 +23,30 @@ from zoneinfo import ZoneInfo
 
 from bot.config import config
 from bot.database import get_session
-from bot.models import Streak, Student, Submission
+from bot.models import Achievement, Assignment, Settings, Streak, Student, Submission
 
 logger = logging.getLogger(__name__)
+
+
+def check_user_is_trainer(user: discord.abc.User | discord.Member | None) -> bool:
+    """Checks if a user is an administrator or has the configured trainer role."""
+    if user is None:
+        return False
+    guild_perms = getattr(user, "guild_permissions", None)
+    if guild_perms and guild_perms.administrator:
+        return True
+    roles = getattr(user, "roles", [])
+    role_names = {role.name.lower() for role in roles}
+    if config.trainer_role_name.lower() in role_names:
+        return True
+    return False
 
 
 def is_trainer():
     """Check decorator: allows server admins or members with the trainer role."""
 
     async def predicate(interaction: discord.Interaction) -> bool:
-        if interaction.user.guild_permissions.administrator:
-            return True
-        role_names = {role.name for role in getattr(interaction.user, "roles", [])}
-        if config.trainer_role_name in role_names:
+        if check_user_is_trainer(interaction.user):
             return True
         await interaction.response.send_message(
             f"🚫 This command is restricted to trainers (`{config.trainer_role_name}` role) or admins.",
@@ -57,6 +68,224 @@ def setup_commands(bot: commands.Bot) -> None:
     async def ping(interaction: discord.Interaction):
         await interaction.response.send_message("🏓 Pong! Bot is online.")
 
+    @tree.command(name="assignment", description="Submit a new assignment to the assignments channel.")
+    @app_commands.describe(
+        topic="The topic of the assignment (e.g. Docker Networking)",
+        details="Details or instructions for the assignment",
+    )
+    async def assignment(interaction: discord.Interaction, topic: str, details: str):
+        channel_id = config.assignments_channel_id
+        if channel_id is None:
+            logger.warning("ASSIGNMENTS_CHANNEL_ID is not configured.")
+            await interaction.response.send_message(
+                "❌ I couldn't post the assignment right now. Please contact the developer.",
+                ephemeral=True,
+            )
+            return
+
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception as e:
+                logger.exception("Failed to fetch assignments channel %s: %s", channel_id, e)
+                await interaction.response.send_message(
+                    "❌ I couldn't post the assignment right now. Please contact the developer.",
+                    ephemeral=True,
+                )
+                return
+
+        now_local = dt.datetime.now(ZoneInfo(config.timezone))
+        posted_str = now_local.strftime("%d %B %Y, %I:%M %p")
+
+        assignment_msg = (
+            "📚 **NEW ASSIGNMENT**\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📌 **Topic:**\n{topic}\n\n"
+            f"📝 **Details:**\n{details}\n\n"
+            f"👤 **Posted by:**\n<@{interaction.user.id}>\n\n"
+            f"🕒 **Posted:**\n{posted_str}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+
+        try:
+            sent_msg = await channel.send(assignment_msg)
+        except Exception as e:
+            logger.exception("Failed to send message to assignments channel %s: %s", channel_id, e)
+            await interaction.response.send_message(
+                "❌ I couldn't post the assignment right now. Please contact the developer.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            with get_session() as session:
+                record = Assignment(
+                    author_discord_id=str(interaction.user.id),
+                    author_username=interaction.user.display_name,
+                    topic=topic,
+                    details=details,
+                    created_at=dt.datetime.now(dt.timezone.utc),
+                    discord_message_id=str(sent_msg.id),
+                    channel_id=str(channel_id),
+                )
+                session.add(record)
+        except Exception as e:
+            logger.exception("Failed to record assignment in database: %s", e)
+
+        await interaction.response.send_message(
+            f"✅ Assignment posted successfully!\n\n📚 **{topic}**\n\nIt has been posted in <#{channel_id}>.",
+            ephemeral=True,
+        )
+
+    @tree.command(name="assignments", description="Show recent assignment posts.")
+    async def assignments(interaction: discord.Interaction):
+        with get_session() as session:
+            rows = (
+                session.query(Assignment)
+                .order_by(Assignment.created_at.desc())
+                .limit(10)
+                .all()
+            )
+
+            if not rows:
+                await interaction.response.send_message("📚 No assignments posted yet.")
+                return
+
+            number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+            lines = ["📚 **RECENT ASSIGNMENTS**", ""]
+            guild_id = interaction.guild_id or config.guild_id
+
+            for idx, item in enumerate(rows):
+                prefix = number_emojis[idx] if idx < len(number_emojis) else f"{idx + 1}."
+                local_time = item.created_at.replace(tzinfo=dt.timezone.utc).astimezone(ZoneInfo(config.timezone))
+                date_str = local_time.strftime("%d %b")
+
+                link_str = ""
+                if guild_id and item.channel_id and item.discord_message_id:
+                    link_str = f" — [View Message](https://discord.com/channels/{guild_id}/{item.channel_id}/{item.discord_message_id})"
+
+                lines.append(f"{prefix} **{item.topic}**")
+                lines.append(f"Posted by <@{item.author_discord_id}> — {date_str}{link_str}")
+                lines.append("")
+
+            await interaction.response.send_message("\n".join(lines).strip())
+
+    @tree.command(name="mystats", description="Show your challenge stats and earned badges.")
+    async def mystats(interaction: discord.Interaction):
+        with get_session() as session:
+            student = (
+                session.query(Student)
+                .filter_by(discord_user_id=str(interaction.user.id))
+                .one_or_none()
+            )
+            if student is None:
+                await interaction.response.send_message(
+                    "📊 You haven't made any challenge submissions yet. Post `Day 1: ...` to get started!"
+                )
+                return
+
+            streak = session.query(Streak).filter_by(student_id=student.id).one_or_none()
+            total_submissions = (
+                session.query(Submission)
+                .filter_by(student_id=student.id, is_valid=True)
+                .count()
+            )
+            latest = (
+                session.query(Submission)
+                .filter_by(student_id=student.id, is_valid=True)
+                .order_by(Submission.submission_date.desc())
+                .first()
+            )
+            badges = (
+                session.query(Achievement)
+                .filter_by(student_id=student.id)
+                .order_by(Achievement.earned_at.asc())
+                .all()
+            )
+
+            current_streak_val = streak.current_streak if streak else 0
+            best_streak_val = streak.best_streak if streak else 0
+            latest_day_val = latest.challenge_day if latest else "—"
+            last_date_val = (
+                streak.last_submission_date.strftime("%d %B %Y")
+                if (streak and streak.last_submission_date)
+                else "—"
+            )
+
+            lines = [
+                "📊 **YOUR CHALLENGE STATS**",
+                "",
+                f"🔥 Current streak: **{current_streak_val} days**",
+                f"🏆 Best streak: **{best_streak_val} days**",
+                f"📚 Latest challenge: **Day {latest_day_val}**",
+                f"✅ Total submissions: **{total_submissions}**",
+                f"📅 Last submission: **{last_date_val}**",
+            ]
+
+            if interaction.guild_id:
+                settings = session.query(Settings).filter_by(guild_id=str(interaction.guild_id)).one_or_none()
+                if settings and settings.challenge_started_date:
+                    days_elapsed = (_today_local() - settings.challenge_started_date).days + 1
+                    if days_elapsed > 0:
+                        pct = min(round((total_submissions / days_elapsed) * 100, 1), 100.0)
+                        lines.append(f"📈 Completion rate: **{pct}%**")
+
+            lines.append("")
+            lines.append("🏅 **BADGES**")
+            if badges:
+                for b in badges:
+                    lines.append(f"🔥 {b.badge_name}")
+            else:
+                lines.append("No badges earned yet. Keep submitting daily to unlock badges!")
+
+            await interaction.response.send_message("\n".join(lines))
+
+    @tree.command(name="today", description="Show your challenge submission status for today.")
+    async def today(interaction: discord.Interaction):
+        with get_session() as session:
+            today_date = _today_local()
+            student = (
+                session.query(Student)
+                .filter_by(discord_user_id=str(interaction.user.id))
+                .one_or_none()
+            )
+
+            submission = None
+            streak = None
+            if student:
+                submission = (
+                    session.query(Submission)
+                    .filter_by(student_id=student.id, submission_date=today_date, is_valid=True)
+                    .first()
+                )
+                streak = session.query(Streak).filter_by(student_id=student.id).one_or_none()
+
+            current_streak = streak.current_streak if streak else 0
+
+            if submission is not None:
+                sub_time_local = submission.created_at.replace(tzinfo=dt.timezone.utc).astimezone(ZoneInfo(config.timezone))
+                time_str = sub_time_local.strftime("%I:%M %p").lstrip("0")
+                lines = [
+                    "📅 **TODAY'S STATUS**",
+                    "",
+                    "Status: ✅ **Submitted**",
+                    "",
+                    f"Challenge: **Day {submission.challenge_day}**",
+                    f"Submitted at: **{time_str}**",
+                    f"Current streak: 🔥 **{current_streak} days**",
+                ]
+            else:
+                lines = [
+                    "📅 **TODAY'S STATUS**",
+                    "",
+                    "⚠️ You haven't submitted today's challenge yet.",
+                    "",
+                    f"Current streak: 🔥 **{current_streak} days**",
+                ]
+
+            await interaction.response.send_message("\n".join(lines))
+
     @tree.command(name="leaderboard", description="Show the challenge leaderboard by current streak.")
     async def leaderboard(interaction: discord.Interaction):
         with get_session() as session:
@@ -65,7 +294,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 .join(Streak, Streak.student_id == Student.id)
                 .filter(Student.active.is_(True))
                 .order_by(Streak.current_streak.desc(), Streak.best_streak.desc())
-                .limit(15)
+                .limit(20)
                 .all()
             )
 
@@ -76,13 +305,50 @@ def setup_commands(bot: commands.Bot) -> None:
             medals = ["🥇", "🥈", "🥉"]
             lines = ["🏆 **Challenge Leaderboard**", ""]
             for idx, (student, streak) in enumerate(rows):
+                total_submissions = (
+                    session.query(Submission)
+                    .filter_by(student_id=student.id, is_valid=True)
+                    .count()
+                )
                 prefix = medals[idx] if idx < 3 else f"{idx + 1}."
                 lines.append(
-                    f"{prefix} {student.username} — 🔥 {streak.current_streak} days "
-                    f"(best: {streak.best_streak})"
+                    f"{prefix} **{student.username}** — 🔥 {streak.current_streak} days "
+                    f"(best: {streak.best_streak}, total: {total_submissions})"
                 )
 
             await interaction.response.send_message("\n".join(lines))
+
+    @tree.command(name="help", description="Show available challenge tracker commands.")
+    async def help_command(interaction: discord.Interaction):
+        user_is_trainer = check_user_is_trainer(interaction.user)
+
+        lines = [
+            "📖 **Akumen Challenge Tracker Commands**",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "🎓 **STUDENT COMMANDS**",
+            "• `/assignment` — Submit an assignment to the assignments channel",
+            "• `/assignments` — View recent assignments",
+            "• `/mystats` — View your challenge stats and earned badges",
+            "• `/today` — Check your submission status for today",
+            "• `/leaderboard` — View the top streak leaderboard",
+            "• `/progress [student]` — View challenge progress for a student",
+            "• `/help` — Show available commands",
+            "• `/ping` — Check if the bot is online",
+        ]
+
+        if user_is_trainer:
+            lines.extend([
+                "",
+                "🛡️ **TRAINER COMMANDS**",
+                "• `/status` — View overall challenge participation status",
+                "• `/missed` — List students who have not submitted today",
+                "• `/reset [student]` — Reset a student's current streak",
+                "• `/export` — Export student challenge data as CSV",
+            ])
+
+        lines.extend(["", "━━━━━━━━━━━━━━━━━━━━"])
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @tree.command(name="status", description="[Trainer] Show overall challenge status.")
     @is_trainer()
@@ -275,11 +541,13 @@ def setup_commands(bot: commands.Bot) -> None:
     @tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CheckFailure):
-            # Already responded to inside the check predicate.
             return
         logger.exception("Slash command error", exc_info=error)
         message = "⚠️ Something went wrong running that command."
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except Exception:
+            pass

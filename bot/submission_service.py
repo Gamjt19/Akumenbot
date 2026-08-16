@@ -16,6 +16,7 @@ from enum import Enum, auto
 from sqlalchemy.orm import Session
 from zoneinfo import ZoneInfo
 
+from bot.achievement_service import check_and_award_achievements
 from bot.models import Streak, Student, Submission
 from bot.parser import parse_submission
 from bot.streak_service import StreakState, compute_next_streak
@@ -38,6 +39,7 @@ class SubmissionResult:
     current_streak: int | None = None
     best_streak: int | None = None
     streak_broken: bool = False
+    new_achievements: tuple[str, ...] = ()
 
 
 def get_or_create_student(session: Session, discord_user_id: str, username: str) -> Student:
@@ -158,6 +160,19 @@ def process_message(
     streak_row.current_streak = result.current_streak
     streak_row.best_streak = result.best_streak
     streak_row.last_submission_date = result.last_submission_date
+    session.flush()
+
+    total_valid_submissions = (
+        session.query(Submission)
+        .filter_by(student_id=student.id, is_valid=True)
+        .count()
+    )
+    new_badges = check_and_award_achievements(
+        session,
+        student_id=student.id,
+        current_streak=result.current_streak,
+        total_submissions=total_valid_submissions,
+    )
 
     return SubmissionResult(
         outcome=SubmissionOutcome.RECORDED,
@@ -165,4 +180,5 @@ def process_message(
         current_streak=result.current_streak,
         best_streak=result.best_streak,
         streak_broken=result.streak_broken,
+        new_achievements=tuple(new_badges),
     )
