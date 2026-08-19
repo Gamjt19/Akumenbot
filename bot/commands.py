@@ -61,59 +61,84 @@ def _today_local() -> dt.date:
     return dt.datetime.now(ZoneInfo(config.timezone)).date()
 
 
-def setup_commands(bot: commands.Bot) -> None:
-    tree = bot.tree
-
-    @tree.command(name="ping", description="Check if the bot is online.")
-    async def ping(interaction: discord.Interaction):
-        await interaction.response.send_message("🏓 Pong! Bot is online.")
-
-    @tree.command(name="assignment", description="Submit a new assignment to the assignments channel.")
-    @app_commands.describe(
-        topic="The topic of the assignment (e.g. Docker Networking)",
-        details="Details or instructions for the assignment",
+def format_post_message(topic: str, details: str, author_id: str | int, posted_str: str) -> str:
+    """Formats a post message in a neutral style without 'NEW ASSIGNMENT' heading."""
+    return (
+        f"📌 **{topic}**\n\n"
+        f"{details}\n\n"
+        f"👤 **Posted by:** <@{author_id}>\n"
+        f"🕒 **Posted:** {posted_str}"
     )
-    async def assignment(interaction: discord.Interaction, topic: str, details: str):
-        channel_id = config.assignments_channel_id
-        if channel_id is None:
-            logger.warning("ASSIGNMENTS_CHANNEL_ID is not configured.")
+
+
+class CreatePostModal(discord.ui.Modal, title="Create Post"):
+    topic: discord.ui.TextInput = discord.ui.TextInput(
+        label="Topic",
+        style=discord.TextStyle.short,
+        placeholder="e.g. Project 34, Docker Task, Homework...",
+        required=True,
+        max_length=256,
+    )
+    details: discord.ui.TextInput = discord.ui.TextInput(
+        label="Details",
+        style=discord.TextStyle.paragraph,
+        placeholder="Enter details or instructions here...",
+        required=True,
+        max_length=2000,
+    )
+
+    def __init__(self, bot: commands.Bot):
+        super().__init__()
+        self.bot = bot
+
+    async def on_submit(self, interaction: discord.Interaction):
+        topic_val = self.topic.value.strip()
+        details_val = self.details.value
+
+        if not topic_val or not details_val.strip():
             await interaction.response.send_message(
-                "❌ I couldn't post the assignment right now. Please contact the developer.",
+                "❌ Topic and details cannot be empty.",
                 ephemeral=True,
             )
             return
 
-        channel = bot.get_channel(channel_id)
+        channel_id = config.assignments_channel_id
+        if channel_id is None:
+            logger.warning("ASSIGNMENTS_CHANNEL_ID is not configured.")
+            await interaction.response.send_message(
+                "❌ I couldn't post right now. Please contact the developer.",
+                ephemeral=True,
+            )
+            return
+
+        channel = self.bot.get_channel(channel_id)
         if channel is None:
             try:
-                channel = await bot.fetch_channel(channel_id)
+                channel = await self.bot.fetch_channel(channel_id)
             except Exception as e:
                 logger.exception("Failed to fetch assignments channel %s: %s", channel_id, e)
                 await interaction.response.send_message(
-                    "❌ I couldn't post the assignment right now. Please contact the developer.",
+                    "❌ I couldn't post right now. Please contact the developer.",
                     ephemeral=True,
                 )
                 return
 
         now_local = dt.datetime.now(ZoneInfo(config.timezone))
-        posted_str = now_local.strftime("%d %B %Y, %I:%M %p")
+        posted_str = now_local.strftime("%d %b %Y, %I:%M %p")
 
-        assignment_msg = (
-            "📚 **NEW ASSIGNMENT**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📌 **Topic:**\n{topic}\n\n"
-            f"📝 **Details:**\n{details}\n\n"
-            f"👤 **Posted by:**\n<@{interaction.user.id}>\n\n"
-            f"🕒 **Posted:**\n{posted_str}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━"
+        post_msg = format_post_message(
+            topic=topic_val,
+            details=details_val,
+            author_id=interaction.user.id,
+            posted_str=posted_str,
         )
 
         try:
-            sent_msg = await channel.send(assignment_msg)
+            sent_msg = await channel.send(post_msg)
         except Exception as e:
             logger.exception("Failed to send message to assignments channel %s: %s", channel_id, e)
             await interaction.response.send_message(
-                "❌ I couldn't post the assignment right now. Please contact the developer.",
+                "❌ I couldn't post right now. Please contact the developer.",
                 ephemeral=True,
             )
             return
@@ -123,8 +148,8 @@ def setup_commands(bot: commands.Bot) -> None:
                 record = Assignment(
                     author_discord_id=str(interaction.user.id),
                     author_username=interaction.user.display_name,
-                    topic=topic,
-                    details=details,
+                    topic=topic_val,
+                    details=details_val,
                     created_at=dt.datetime.now(dt.timezone.utc),
                     discord_message_id=str(sent_msg.id),
                     channel_id=str(channel_id),
@@ -134,9 +159,21 @@ def setup_commands(bot: commands.Bot) -> None:
             logger.exception("Failed to record assignment in database: %s", e)
 
         await interaction.response.send_message(
-            f"✅ Assignment posted successfully!\n\n📚 **{topic}**\n\nIt has been posted in <#{channel_id}>.",
+            f"✅ Post created successfully!\n\n📌 **{topic_val}**\n\nIt has been posted in <#{channel_id}>.",
             ephemeral=True,
         )
+
+
+def setup_commands(bot: commands.Bot) -> None:
+    tree = bot.tree
+
+    @tree.command(name="ping", description="Check if the bot is online.")
+    async def ping(interaction: discord.Interaction):
+        await interaction.response.send_message("🏓 Pong! Bot is online.")
+
+    @tree.command(name="assignment", description="Submit a new post or assignment to the assignments channel.")
+    async def assignment(interaction: discord.Interaction):
+        await interaction.response.send_modal(CreatePostModal(bot=bot))
 
     @tree.command(name="assignments", description="Show recent assignment posts.")
     async def assignments(interaction: discord.Interaction):

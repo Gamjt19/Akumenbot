@@ -29,6 +29,7 @@ class SubmissionOutcome(Enum):
     RECORDED = auto()              # new valid submission, streak updated
     DUPLICATE_SAME_DAY = auto()    # student already has an official submission today
     INVALID_DAY_NUMBER = auto()    # student typed day number != expected day number
+    STREAK_BROKEN_MUST_RESTART = auto()  # student missed a day and must restart from Day 1
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class SubmissionResult:
     current_streak: int | None = None
     best_streak: int | None = None
     streak_broken: bool = False
+    last_valid_day: int | None = None  # the last day the student successfully submitted
     new_achievements: tuple[str, ...] = ()
 
 
@@ -129,7 +131,29 @@ def process_message(
         .order_by(Submission.id.desc())
         .first()
     )
-    expected_day = (last_sub.challenge_day + 1) if last_sub is not None else 1
+
+    # Determine whether the student missed one or more calendar days.
+    # If they did, the streak resets and they MUST restart from Day 1,
+    # regardless of what day number they typed.
+    streak_was_broken = False
+    if last_sub is not None:
+        gap_days = (submission_date - last_sub.submission_date).days
+        if gap_days > 1:
+            streak_was_broken = True
+
+    if streak_was_broken:
+        # Student missed a day — day counter must restart from 1.
+        if parsed.challenge_day != 1:
+            return SubmissionResult(
+                outcome=SubmissionOutcome.STREAK_BROKEN_MUST_RESTART,
+                challenge_day=parsed.challenge_day,
+                expected_day=1,
+                last_valid_day=last_sub.challenge_day if last_sub else None,
+            )
+        # They correctly posted Day 1; fall through to record it.
+        expected_day = 1
+    else:
+        expected_day = (last_sub.challenge_day + 1) if last_sub is not None else 1
 
     if parsed.challenge_day != expected_day:
         return SubmissionResult(

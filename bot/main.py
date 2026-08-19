@@ -15,7 +15,7 @@ from discord.ext import commands
 from bot.commands import setup_commands
 from bot.config import config
 from bot.database import get_session, init_db
-from bot.submission_service import SubmissionOutcome, process_message
+from bot.submission_service import SubmissionOutcome, SubmissionResult, process_message
 from bot.tasks import setup_daily_report_task
 
 logging.basicConfig(
@@ -127,6 +127,13 @@ async def on_message(message: discord.Message):
                 f"⚠️ **Invalid day number!**\n\n"
                 f"Expected **Day {result.expected_day}**, but you entered **Day {result.challenge_day}**.\n"
                 f"Please re-submit using `Day {result.expected_day}`."
+            )
+        elif result.outcome == SubmissionOutcome.STREAK_BROKEN_MUST_RESTART:
+            last_day_info = f" (your last submission was **Day {result.last_valid_day}**)" if result.last_valid_day else ""
+            await message.reply(
+                f"❌ **Streak broken — you must restart from Day 1!**\n\n"
+                f"You missed one or more days{last_day_info}, so your streak and day counter have been reset.\n\n"
+                f"Please re-submit using `Day 1: <your progress>` to begin a new streak. 💪"
             )
         # NOT_A_SUBMISSION: silently ignored on purpose (channel may have other
         # chatter). If stricter behavior is wanted, uncomment the else-branch below.

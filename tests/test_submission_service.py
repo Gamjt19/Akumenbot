@@ -120,3 +120,108 @@ def test_cleared_submissions_resets_streak_state(db_session):
     assert res.outcome == SubmissionOutcome.RECORDED
     assert res.challenge_day == 1
     assert res.current_streak == 1
+
+
+def test_missed_day_blocks_continuation(db_session):
+    """Student on Day 8 who misses a day must not be allowed to post Day 9 (or any day > 1)."""
+    # Day 8 posted on Aug 12
+    res1 = process_message(
+        db_session,
+        discord_user_id="user_streak",
+        username="StreakUser",
+        message_id="msg_d8",
+        message_content="Day 8: Done",
+        message_timestamp_utc=dt.datetime(2026, 8, 12, 10, 0, tzinfo=dt.timezone.utc),
+        timezone_name="UTC",
+    )
+    # Fast-forward to Aug 12 first by recording days 1-7 first
+    # (for this test we seed directly)
+    db_session.rollback()
+
+    from bot.models import Streak, Student, Submission
+    import datetime as _dt
+
+    student = Student(discord_user_id="user_missed", username="MissedUser")
+    db_session.add(student)
+    db_session.flush()
+
+    # Last valid submission was Day 8, two calendar days ago (missed yesterday)
+    last_submission_date = _dt.date(2026, 8, 16)
+    sub8 = Submission(
+        student_id=student.id,
+        challenge_day=8,
+        submission_date=last_submission_date,
+        message_id="msg_8",
+        message_content="Day 8: Done",
+        is_valid=True,
+    )
+    db_session.add(sub8)
+    streak = Streak(
+        student_id=student.id,
+        current_streak=8,
+        best_streak=8,
+        last_submission_date=last_submission_date,
+    )
+    db_session.add(streak)
+    db_session.commit()
+
+    # Student skipped Aug 17 and now tries to post Day 9 on Aug 18
+    now = dt.datetime(2026, 8, 18, 10, 0, tzinfo=dt.timezone.utc)
+    result = process_message(
+        db_session,
+        discord_user_id="user_missed",
+        username="MissedUser",
+        message_id="msg_9_attempt",
+        message_content="Day 9: trying to continue",
+        message_timestamp_utc=now,
+        timezone_name="UTC",
+    )
+    assert result.outcome == SubmissionOutcome.STREAK_BROKEN_MUST_RESTART
+    assert result.expected_day == 1
+    assert result.last_valid_day == 8
+
+
+def test_missed_day_allows_day1_restart(db_session):
+    """After missing a day, the student can successfully restart from Day 1."""
+    from bot.models import Streak, Student, Submission
+    import datetime as _dt
+
+    student = Student(discord_user_id="user_restart", username="RestartUser")
+    db_session.add(student)
+    db_session.flush()
+
+    last_submission_date = _dt.date(2026, 8, 16)
+    sub5 = Submission(
+        student_id=student.id,
+        challenge_day=5,
+        submission_date=last_submission_date,
+        message_id="msg_5",
+        message_content="Day 5: Done",
+        is_valid=True,
+    )
+    db_session.add(sub5)
+    streak = Streak(
+        student_id=student.id,
+        current_streak=5,
+        best_streak=5,
+        last_submission_date=last_submission_date,
+    )
+    db_session.add(streak)
+    db_session.commit()
+
+    # Student missed Aug 17, now posts Day 1 on Aug 18
+    now = dt.datetime(2026, 8, 18, 10, 0, tzinfo=dt.timezone.utc)
+    result = process_message(
+        db_session,
+        discord_user_id="user_restart",
+        username="RestartUser",
+        message_id="msg_new_day1",
+        message_content="Day 1: starting over",
+        message_timestamp_utc=now,
+        timezone_name="UTC",
+    )
+    assert result.outcome == SubmissionOutcome.RECORDED
+    assert result.challenge_day == 1
+    assert result.current_streak == 1
+    assert result.streak_broken is True
+
